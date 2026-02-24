@@ -7,6 +7,7 @@ The model is deliberately small (3 fully-connected layers) so it:
   2. Produces imperfect, sometimes-gibberish words that sound adjectival
 """
 
+import argparse
 import numpy as np
 import tensorflow as tf
 import os
@@ -87,13 +88,13 @@ def build_dataset(adjectives: list[str]):
 # 4. Model definition – 3 fully-connected layers, deliberately small
 # ---------------------------------------------------------------------------
 
-def build_model(input_dim: int, output_dim: int) -> tf.keras.Model:
-    model = tf.keras.Sequential([
-        tf.keras.layers.InputLayer(input_shape=(input_dim,)),
-        tf.keras.layers.Dense(48, activation="relu"),
-        tf.keras.layers.Dense(48, activation="relu"),
-        tf.keras.layers.Dense(output_dim, activation="softmax"),
-    ])
+def build_model(input_dim: int, output_dim: int,
+                 width: int = 48, depth: int = 2) -> tf.keras.Model:
+    layers = [tf.keras.layers.InputLayer(input_shape=(input_dim,))]
+    for _ in range(depth):
+        layers.append(tf.keras.layers.Dense(width, activation="relu"))
+    layers.append(tf.keras.layers.Dense(output_dim, activation="softmax"))
+    model = tf.keras.Sequential(layers)
     model.compile(
         optimizer="adam",
         loss="sparse_categorical_crossentropy",
@@ -106,7 +107,8 @@ def build_model(input_dim: int, output_dim: int) -> tf.keras.Model:
 # 5. Training
 # ---------------------------------------------------------------------------
 
-def train(epochs: int = 120, batch_size: int = 64):
+def train(epochs: int = 120, batch_size: int = 64,
+          width: int = 48, depth: int = 2):
     words = load_adjectives(max_len=MAX_WORD_LEN)
     print(f"Training on {len(words)} unique adjectives (max {MAX_WORD_LEN} chars)")
 
@@ -114,7 +116,7 @@ def train(epochs: int = 120, batch_size: int = 64):
     print(f"Total training pairs: {len(X)}")
 
     input_dim = VOCAB_SIZE + 1  # one-hot char + position
-    model = build_model(input_dim, VOCAB_SIZE)
+    model = build_model(input_dim, VOCAB_SIZE, width=width, depth=depth)
     model.summary()
 
     # Split off a small validation set
@@ -211,6 +213,14 @@ def test_generation(interpreter, n: int = 30):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    tflite_path = train()
+    parser = argparse.ArgumentParser(description="Train adjective generator")
+    parser.add_argument("--width", type=int, default=48, help="neurons per hidden layer (default: 48)")
+    parser.add_argument("--depth", type=int, default=2, help="number of hidden layers (default: 2)")
+    parser.add_argument("--epochs", type=int, default=120, help="training epochs (default: 120)")
+    parser.add_argument("--batch-size", type=int, default=64, help="batch size (default: 64)")
+    args = parser.parse_args()
+
+    tflite_path = train(epochs=args.epochs, batch_size=args.batch_size,
+                        width=args.width, depth=args.depth)
     interpreter = load_tflite_model(tflite_path)
     test_generation(interpreter)
