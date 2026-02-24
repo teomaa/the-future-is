@@ -15,12 +15,19 @@ static constexpr int SEQ_LEN = MAX_WORD_LEN + 1;
 
 // --- Tunable ---
 static constexpr float TEMPERATURE = 0.5f;
-static constexpr int DELAY_PRESET_MS = 3000;
+static constexpr int DELAY_PRESET_MS = 2400;
 static constexpr int DELAY_GENERATED_MS = 1200;
 static constexpr int KEYSTROKE_MIN_MS = 60;
 static constexpr int KEYSTROKE_MAX_MS = 180;
 static constexpr int KEYSTROKE_PRESET_MS = 90;
 static constexpr int CURSOR_BLINK_MS = 600;
+
+// --- Layout (portrait 135x240) ---
+static constexpr int HEADER_Y = 30;
+static constexpr int HEADER_LINE2_Y = 55;
+static constexpr int WORD_START_Y = 110;
+static constexpr int WORD_LINE_H = 32;
+static constexpr int SCREEN_PAD = 4;
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -53,7 +60,6 @@ static void generate_word(char* out, int max_len) {
 
         adjective_model_larger256_4Model::Inference(input, output);
 
-        // Apply temperature
         if (TEMPERATURE != 1.0f) {
             float max_logp = -1e30f;
             for (int i = 0; i < VOCAB_SIZE; i++) {
@@ -85,50 +91,122 @@ static void generate_word(char* out, int max_len) {
 }
 
 // --- Preset words ---
-//static const char* PRESETS[] = { "bleak", "bright", "beautiful", "scary", "ai", "ass", "a mystery", "scary", "exciting", "amazing", "delightful", "expensive", "sunny", "hopeful" };
-static const char* PRESETS[] = { "bleak", "bright"};
+static const char* PRESETS[] = { "bleak", "bright", "beautiful", "scary", "ai", "ass", "a mystery", "scary", "exciting", "amazing", "delightful", "expensive", "sunny", "hopeful" };
 static constexpr int NUM_PRESETS = sizeof(PRESETS) / sizeof(PRESETS[0]);
 
 // Phase: 0 = showing presets, 1 = showing generated words
 static int phase = 0;
 static int word_idx = 0;
-static char displayed[MAX_WORD_LEN + 1] = "";  // what's currently on screen
+static char displayed[MAX_WORD_LEN + 1] = "";
+static bool using_serif = false;
+
+static void apply_serif_font() {
+    tft.setFreeFont(&FreeSerif18pt7b);
+    tft.setTextSize(1);
+}
+
+static void apply_default_font() {
+    tft.setFreeFont(NULL);
+    tft.setTextSize(3);
+}
 
 static int keystroke_delay() {
     return random(KEYSTROKE_MIN_MS, KEYSTROKE_MAX_MS + 1);
 }
 
 static void draw_header() {
-    tft.setTextDatum(MC_DATUM);
+    tft.setFreeFont(NULL);
     tft.setTextSize(2);
-    tft.drawString("the future is...", tft.width() / 2, tft.height() / 2 - 20);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("the future", SCREEN_PAD, HEADER_Y);
+    tft.drawString("is...", SCREEN_PAD, HEADER_LINE2_Y);
 }
 
 static bool cursor_phase() {
     return (millis() / CURSOR_BLINK_MS) % 2 == 0;
 }
 
+// Draw word wrapped across lines, with optional blinking cursor.
+// Cursor is always accounted for in line-breaking and centering.
 static void draw_word_area(const char* word, bool with_cursor = false) {
+    int maxW = tft.width() - SCREEN_PAD * 2;
     int centerX = tft.width() / 2;
-    int wordY = tft.height() / 2 + 20;
 
-    tft.fillRect(0, wordY - 15, tft.width(), 30, TFT_BLACK);
-    tft.setTextSize(3);
+    // Clear word area
+    tft.fillRect(0, WORD_START_Y - 20, tft.width(), tft.height() - (WORD_START_Y - 20), TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
 
-    // Draw the word center-aligned (never shifts)
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(word, centerX, wordY);
+    if (using_serif) apply_serif_font(); else apply_default_font();
 
-    // Draw cursor as a separate element to the right of the word
+    // Build the full string including cursor for measurement
+    int len = strlen(word);
+    char full[MAX_WORD_LEN + 2];
+    memcpy(full, word, len);
     if (with_cursor) {
-        int wordW = tft.textWidth(word);
-        int cursorX = centerX + wordW / 2;
-        tft.setTextDatum(ML_DATUM);
-        if (cursor_phase()) {
-            tft.drawString("_", cursorX, wordY);
+        full[len] = '_';
+        full[len + 1] = '\0';
+    } else {
+        full[len] = '\0';
+    }
+    int fullLen = strlen(full);
+
+    if (fullLen == 0) return;
+
+    // Break into lines based on full string (word + cursor)
+    int lineStart = 0;
+    int lineNum = 0;
+    char lineBuf[MAX_WORD_LEN + 2];
+
+    while (lineStart < fullLen) {
+        int lineEnd = lineStart + 1;
+        while (lineEnd <= fullLen) {
+            memcpy(lineBuf, full + lineStart, lineEnd - lineStart);
+            lineBuf[lineEnd - lineStart] = '\0';
+            if (tft.textWidth(lineBuf) > maxW) {
+                lineEnd--;
+                break;
+            }
+            lineEnd++;
         }
-        // When cursor off, area is already cleared — no shift
+        if (lineEnd > fullLen) lineEnd = fullLen;
+        if (lineEnd == lineStart) lineEnd = lineStart + 1;
+
+        int lineLen = lineEnd - lineStart;
+        memcpy(lineBuf, full + lineStart, lineLen);
+        lineBuf[lineLen] = '\0';
+
+        int lineY = WORD_START_Y + lineNum * WORD_LINE_H;
+
+        // Check if this line contains the cursor (last char is '_' and it's the last line segment)
+        bool cursorOnThisLine = with_cursor && (lineEnd == fullLen);
+
+        if (cursorOnThisLine) {
+            // Draw the line centered including cursor space
+            tft.setTextDatum(MC_DATUM);
+            // Draw word chars only (not the _), but positioned for full width
+            int fullLineW = tft.textWidth(lineBuf);
+            int startX = centerX - fullLineW / 2;
+
+            // Separate word part and cursor
+            char wordPart[MAX_WORD_LEN + 2];
+            memcpy(wordPart, lineBuf, lineLen - 1);
+            wordPart[lineLen - 1] = '\0';
+
+            tft.setTextDatum(ML_DATUM);
+            tft.drawString(wordPart, startX, lineY);
+
+            if (cursor_phase()) {
+                int wordPartW = tft.textWidth(wordPart);
+                tft.drawString("_", startX + wordPartW, lineY - (using_serif ? 3 : 0));
+            }
+        } else {
+            tft.setTextDatum(MC_DATUM);
+            tft.drawString(lineBuf, centerX, lineY);
+        }
+
+        lineStart = lineEnd;
+        lineNum++;
     }
 }
 
@@ -145,16 +223,15 @@ static void blink_delay(int ms) {
     }
 }
 
-// Typing effect: delete back to common prefix, then type new suffix
-// If random_strokes is true, each keystroke gets a random delay; otherwise fixed.
-static void type_word(const char* word, int hold_ms, bool random_strokes) {
+static void type_word(const char* word, int hold_ms, bool random_strokes, bool use_serif) {
     int old_len = strlen(displayed);
     int new_len = strlen(word);
 
-    // Find common prefix length
     int common = 0;
-    while (common < old_len && common < new_len && displayed[common] == word[common]) {
-        common++;
+    if (using_serif == use_serif) {
+        while (common < old_len && common < new_len && displayed[common] == word[common]) {
+            common++;
+        }
     }
 
     // Delete from end back to common prefix
@@ -162,6 +239,13 @@ static void type_word(const char* word, int hold_ms, bool random_strokes) {
         displayed[i - 1] = '\0';
         draw_word_area(displayed, true);
         blink_delay(random_strokes ? keystroke_delay() : KEYSTROKE_PRESET_MS);
+    }
+
+    // Switch font
+    using_serif = use_serif;
+
+    if (common > 0) {
+        draw_word_area(displayed, true);
     }
 
     // Type new characters one by one
@@ -172,14 +256,13 @@ static void type_word(const char* word, int hold_ms, bool random_strokes) {
         blink_delay(random_strokes ? keystroke_delay() : KEYSTROKE_PRESET_MS);
     }
 
-    // Hold the completed word with blinking cursor
     blink_delay(hold_ms);
 }
 
 void setup() {
     randomSeed(esp_random());
     tft.init();
-    tft.setRotation(1);
+    tft.setRotation(0);  // Portrait, 0deg
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     draw_header();
@@ -187,7 +270,7 @@ void setup() {
 
 void loop() {
     if (phase == 0) {
-        type_word(PRESETS[word_idx], DELAY_PRESET_MS, false);
+        type_word(PRESETS[word_idx], DELAY_PRESET_MS, false, true);
         word_idx++;
         if (word_idx >= NUM_PRESETS) {
             phase = 1;
@@ -196,7 +279,7 @@ void loop() {
     } else {
         char word[MAX_WORD_LEN + 1];
         generate_word(word, sizeof(word));
-        type_word(word, DELAY_GENERATED_MS, true);
+        type_word(word, DELAY_GENERATED_MS, true, false);
         word_idx++;
         if (word_idx >= NUM_PRESETS) {
             phase = 0;
