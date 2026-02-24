@@ -19,6 +19,7 @@ static constexpr int DELAY_PRESET_MS = 3000;
 static constexpr int DELAY_GENERATED_MS = 1200;
 static constexpr int KEYSTROKE_MIN_MS = 60;
 static constexpr int KEYSTROKE_MAX_MS = 180;
+static constexpr int KEYSTROKE_PRESET_MS = 90;
 static constexpr int CURSOR_BLINK_MS = 600;
 
 TFT_eSPI tft = TFT_eSPI();
@@ -84,7 +85,8 @@ static void generate_word(char* out, int max_len) {
 }
 
 // --- Preset words ---
-static const char* PRESETS[] = { "bleak", "bright", "beautiful", "scary", "ai", "ass", "a mystery", "scary", "exciting", "amazing", "delightful", "expensive", "sunny", "hopeful" };
+//static const char* PRESETS[] = { "bleak", "bright", "beautiful", "scary", "ai", "ass", "a mystery", "scary", "exciting", "amazing", "delightful", "expensive", "sunny", "hopeful" };
+static const char* PRESETS[] = { "bleak", "bright"};
 static constexpr int NUM_PRESETS = sizeof(PRESETS) / sizeof(PRESETS[0]);
 
 // Phase: 0 = showing presets, 1 = showing generated words
@@ -143,17 +145,9 @@ static void blink_delay(int ms) {
     }
 }
 
-static void show_word(const char* word, int delay_ms) {
-    tft.fillScreen(TFT_BLACK);
-    draw_header();
-    draw_word_area(word);
-    strncpy(displayed, word, MAX_WORD_LEN);
-    displayed[MAX_WORD_LEN] = '\0';
-    delay(delay_ms);
-}
-
 // Typing effect: delete back to common prefix, then type new suffix
-static void type_word(const char* word, int hold_ms) {
+// If random_strokes is true, each keystroke gets a random delay; otherwise fixed.
+static void type_word(const char* word, int hold_ms, bool random_strokes) {
     int old_len = strlen(displayed);
     int new_len = strlen(word);
 
@@ -167,7 +161,7 @@ static void type_word(const char* word, int hold_ms) {
     for (int i = old_len; i > common; i--) {
         displayed[i - 1] = '\0';
         draw_word_area(displayed, true);
-        blink_delay(keystroke_delay());
+        blink_delay(random_strokes ? keystroke_delay() : KEYSTROKE_PRESET_MS);
     }
 
     // Type new characters one by one
@@ -175,7 +169,7 @@ static void type_word(const char* word, int hold_ms) {
         displayed[i] = word[i];
         displayed[i + 1] = '\0';
         draw_word_area(displayed, true);
-        blink_delay(keystroke_delay());
+        blink_delay(random_strokes ? keystroke_delay() : KEYSTROKE_PRESET_MS);
     }
 
     // Hold the completed word with blinking cursor
@@ -188,29 +182,25 @@ void setup() {
     tft.setRotation(1);
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    draw_header();
 }
 
 void loop() {
     if (phase == 0) {
-        show_word(PRESETS[word_idx], DELAY_PRESET_MS);
+        type_word(PRESETS[word_idx], DELAY_PRESET_MS, false);
         word_idx++;
         if (word_idx >= NUM_PRESETS) {
             phase = 1;
             word_idx = 0;
-            // Transition: draw header once, then typing takes over
-            tft.fillScreen(TFT_BLACK);
-            draw_header();
-            draw_word_area(displayed);
         }
     } else {
         char word[MAX_WORD_LEN + 1];
         generate_word(word, sizeof(word));
-        type_word(word, DELAY_GENERATED_MS);
+        type_word(word, DELAY_GENERATED_MS, true);
         word_idx++;
         if (word_idx >= NUM_PRESETS) {
             phase = 0;
             word_idx = 0;
-            displayed[0] = '\0';
         }
     }
 }
